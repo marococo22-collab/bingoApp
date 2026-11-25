@@ -253,33 +253,42 @@ function unlockAudio(){
 }
 document.addEventListener('pointerdown',unlockAudio,{passive:true});
 document.addEventListener('keydown',unlockAudio);
-let noiseBuf=null;
-function noise(){if(!noiseBuf){noiseBuf=ac.createBuffer(1,ac.sampleRate,ac.sampleRate);const d=noiseBuf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1}return noiseBuf}
-function hitAt(t,vol,freq,dur,type){ // スネア/タム1打
+let noiseBuf=null,bus=null;
+const ROLL=1.8; // ドラムロールの長さ（秒）
+function noise(){if(!noiseBuf){noiseBuf=ac.createBuffer(1,ac.sampleRate*2,ac.sampleRate);const d=noiseBuf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1}return noiseBuf}
+function out(){if(!bus){const c=ac.createDynamicsCompressor();c.threshold.value=-20;c.ratio.value=8;c.attack.value=.002;bus=ac.createGain();bus.gain.value=.45;bus.connect(c).connect(ac.destination)}return bus}
+function snare(t,v){ // スネア1打：響き線のノイズ＋胴鳴り
   const n=ac.createBufferSource();n.buffer=noise();
-  const f=ac.createBiquadFilter();f.type=type||'bandpass';f.frequency.value=freq;f.Q.value=.8;
-  const g=ac.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);
-  n.connect(f).connect(g).connect(ac.destination);n.start(t);n.stop(t+dur+.02);
+  const hp=ac.createBiquadFilter();hp.type='highpass';hp.frequency.value=1200;
+  const pk=ac.createBiquadFilter();pk.type='peaking';pk.frequency.value=3500;pk.gain.value=6;
+  const g=ac.createGain();g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+.09);
+  n.connect(hp).connect(pk).connect(g).connect(out());n.start(t,Math.random()*1.5);n.stop(t+.1);
+  const o=ac.createOscillator(),og=ac.createGain();o.type='triangle';
+  o.frequency.setValueAtTime(240,t);o.frequency.exponentialRampToValueAtTime(170,t+.05);
+  og.gain.setValueAtTime(v*.5,t);og.gain.exponentialRampToValueAtTime(.001,t+.06);
+  o.connect(og).connect(out());o.start(t);o.stop(t+.07);
+}
+function kick(t,v){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';
+  o.frequency.setValueAtTime(130,t);o.frequency.exponentialRampToValueAtTime(45,t+.35);
+  g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+.5);o.connect(g).connect(out());o.start(t);o.stop(t+.55)}
+function crash(t,v){ // シンバル：高域ノイズ＋金属的な倍音
+  const n=ac.createBufferSource();n.buffer=noise();
+  const hp=ac.createBiquadFilter();hp.type='highpass';hp.frequency.value=4500;
+  const g=ac.createGain();g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(v*.35,t+.25);g.gain.exponentialRampToValueAtTime(.001,t+2.2);
+  n.connect(hp).connect(g).connect(out());n.start(t);n.stop(t+2.3);
+  const mg=ac.createGain();mg.gain.setValueAtTime(v*.05,t);mg.gain.exponentialRampToValueAtTime(.001,t+1.6);
+  const bp=ac.createBiquadFilter();bp.type='highpass';bp.frequency.value=3000;bp.connect(mg).connect(out());
+  [3150,4370,5280,6910,8130].forEach(f=>{const o=ac.createOscillator();o.type='square';o.frequency.value=f;o.connect(bp);o.start(t);o.stop(t+1.7)});
 }
 function playRoll(len){
   if(!soundOn||!ac||ac.state!=='running')return;
-  const t0=ac.currentTime+.02,step=.055;
-  // ジャカジャカ：だんだん大きくなるドラムロール＋低いタムの刻み
-  for(let t=0;t<len;t+=step){
-    const k=t/len;hitAt(t0+t,.12+.35*k,1800+((t/step)%2?600:0),.07,'bandpass');
-    if(Math.round(t/step)%4===0){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';
-      o.frequency.setValueAtTime(140+60*k,t0+t);o.frequency.exponentialRampToValueAtTime(70,t0+t+.12);
-      g.gain.setValueAtTime(.25+.3*k,t0+t);g.gain.exponentialRampToValueAtTime(.001,t0+t+.14);
-      o.connect(g).connect(ac.destination);o.start(t0+t);o.stop(t0+t+.16)}
-  }
-  // ジャーン！：明るい和音＋シンバル
-  const tj=t0+len,master=ac.createGain();master.gain.setValueAtTime(.0001,tj);
-  master.gain.exponentialRampToValueAtTime(.32,tj+.02);master.gain.exponentialRampToValueAtTime(.001,tj+1.8);
-  const lp=ac.createBiquadFilter();lp.type='lowpass';lp.frequency.setValueAtTime(5000,tj);lp.frequency.exponentialRampToValueAtTime(1200,tj+1.5);
-  lp.connect(master).connect(ac.destination);
-  [261.6,329.6,392,523.3,659.3].forEach((f,i)=>{[-6,6].forEach(dt=>{const o=ac.createOscillator();o.type=i<2?'sawtooth':'square';
-    o.frequency.value=f;o.detune.value=dt;const g=ac.createGain();g.gain.value=i<2?.18:.08;o.connect(g).connect(lp);o.start(tj);o.stop(tj+1.9)})});
-  hitAt(tj,.5,7000,1.4,'highpass');hitAt(tj,.6,200,.25,'lowpass');
+  const t0=ac.currentTime+.03;
+  // ドラロール：左右の手で細かく連打（約30打/秒）、だんだん大きく
+  let t=0,i=0;
+  while(t<len){const k=t/len;const v=(.12+.5*k*k)*(i%2?.85:1)*(0.9+Math.random()*.2);
+    snare(t0+t,v);t+=.033+(Math.random()-.5)*.006;i++}
+  // ジャーン！：シンバル＋バスドラ＋スネアのアクセント
+  const tj=t0+len;crash(tj,.5);kick(tj,.7);snare(tj,.6);
 }
 function renderSoundBtn(){$('soundBtn').textContent=soundOn?'効果音：オン':'効果音：オフ';$('soundBtn').setAttribute('aria-pressed',soundOn)}
 $('soundBtn').onclick=()=>{soundOn=!soundOn;try{localStorage.setItem('bingoSound',soundOn?'on':'off')}catch(e){}unlockAudio();renderSoundBtn()};
@@ -289,11 +298,11 @@ function showBall(animate){
   const n=S.drawn[S.drawn.length-1],ball=$('ball');
   if(!n){$('ballL').textContent='';$('ballN').textContent='–';render();return}
   if(!animate){$('ballL').textContent=letter(n);$('ballN').textContent=n;render();return}
-  playRoll(1.05);
-  if(matchMedia('(prefers-reduced-motion:reduce)').matches){setTimeout(()=>{$('ballL').textContent=letter(n);$('ballN').textContent=n;render()},1050);return}
+  playRoll(ROLL);
+  if(matchMedia('(prefers-reduced-motion:reduce)').matches){setTimeout(()=>{$('ballL').textContent=letter(n);$('ballN').textContent=n;render()},ROLL*1000);return}
   ball.classList.remove('pop');ball.classList.add('roll');let t=0;
   const iv=setInterval(()=>{const x=1+Math.floor(Math.random()*75);$('ballL').textContent=letter(x);$('ballN').textContent=x;
-    if(++t>14){clearInterval(iv);ball.classList.remove('roll');void ball.offsetWidth;ball.classList.add('pop');$('ballL').textContent=letter(n);$('ballN').textContent=n;render()}},70);
+    if(++t>=Math.round(ROLL*1000/70)){clearInterval(iv);ball.classList.remove('roll');void ball.offsetWidth;ball.classList.add('pop');$('ballL').textContent=letter(n);$('ballN').textContent=n;render()}},70);
 }
 function onState(s){
   s=s||{};
@@ -346,7 +355,7 @@ $('drawBtn').onclick=async()=>{
   busy=true;render();
   const n=rest[Math.floor(Math.random()*rest.length)];
   try{await api.setState({round:S.round,status:'playing',drawn:[...S.drawn,n]})}catch(e){failWrite()}
-  setTimeout(()=>{busy=false;render()},1300);
+  setTimeout(()=>{busy=false;render()},ROLL*1000+400);
 };
 $('resetBtn').onclick=async()=>{
   const b=$('resetBtn'),label='新しいゲームにする（カードを配り直し）';
